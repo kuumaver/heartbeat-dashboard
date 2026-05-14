@@ -1,5 +1,6 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
+  import Minimap from './Minimap.svelte';
 
   export let heartRate = 0;
   export let breathRate = 0;
@@ -81,6 +82,13 @@
   </div>
 
   <div class="scanlines"></div>
+
+  <div class="overlay-left">
+    <Minimap {gps} baseLat={BASE_LAT} baseLng={BASE_LNG} />
+    
+    <div class="sensor-card gps-card">
+      </div>
+  </div>
 
   {#if heartRate > 0}
     <div class="alert-banner-box" class:danger={targetsCount > 1 || isTachycardia || isTachypnea}>
@@ -204,11 +212,32 @@
   .ov-val.yellow { color: #ffcc00; }
   .ov-val.dim { color: #444; }
   .ov-unit { font-size: 0.55rem; color: #444; margin-left: 2px; }
-  .overlay-left { top: 3.5rem; left: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; width: 185px; }
-  .sensor-card { background: rgba(8,11,16,0.85); border: 1px solid rgba(0,255,136,0.12); border-radius: 6px; padding: 0.5rem; }
+  .overlay-left { 
+    top: 4.5rem; /* Increased from 3.5rem to push it lower */
+    left: 0.75rem; 
+    display: flex; 
+    flex-direction: column; 
+    gap: 0.5rem; 
+    width: 155px; /* Narrowed from 185px to make it smaller */
+  }
+  .sensor-card { 
+    background: rgba(8, 11, 16, 0.85); 
+    border: 1px solid rgba(0, 255, 136, 0.12); 
+    border-radius: 4px; 
+    padding: 0.4rem; /* Smaller internal padding */
+  }
   .sc-header { display: flex; gap: 0.3rem; border-bottom: 1px solid rgba(0,255,136,0.1); padding-bottom: 0.25rem; margin-bottom: 0.35rem; align-items: center; }
-  .sc-title { font-size: 0.55rem; letter-spacing: 1.5px; color: #00ff88; }
-  .sc-row { display: flex; justify-content: space-between; padding: 0.15rem 0; font-size: 0.68rem; }
+  .sc-title { 
+    font-size: 0.5rem; /* Reduced for a more compact look */
+    letter-spacing: 1.2px; 
+    color: #00ff88; 
+  }
+  .sc-row { 
+    display: flex; 
+    justify-content: space-between; 
+    padding: 0.1rem 0; /* Tighter padding */
+    font-size: 0.6rem; /* Smaller font for coordinates */
+  }
   .sc-key { color: #44567a; }
   .sc-val { font-weight: bold; color: #c3cfe2; }
   .sc-val.blue { color: #4488ff; }
@@ -225,4 +254,4 @@
   .ct-label { color: #44567a; margin-right: 0.25rem; }
   .ct-val { color: #8892b0; }
   .ct-sep { color: #1e293b; }
-</style>
+</style>  
