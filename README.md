@@ -168,7 +168,7 @@ source venv/bin/activate
 
 3. Boot up the local web api container:
 ```bash
-uvicorn main:app --reload --port 8000
+uvicorn main:app --reload --port 8001
 
 ```
 
@@ -195,7 +195,7 @@ npm run dev
 ```
 
 
-3. Launch your browser window and navigate to the application address output by Vite (typically `http://localhost:5173`) to view your real-time vital signs dashboard streaming telemetry parameters dynamically.
+3. Launch your browser window and navigate to the application address output by Vite (typically `htstp://localhost:5173`) to view your real-time vital signs dashboard streaming telemetry parameters dynamically.
 
 ```
 

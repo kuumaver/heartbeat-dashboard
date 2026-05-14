@@ -8,34 +8,105 @@
   let distance = 0;
   let temperature = 24.5;
   let humidity = 68;
+  let targetsCount = 0;
   let gps = { lat: 14.4791, lng: 120.8980, accuracy: 3.2, altitude: 12, speed: 0, heading: 0 };
   let connected = false;
   let ws;
 
-  let history = [];
+  let history = []; 
+  let detectionHistory = []; // Filtered tracking ledger
   let activeTab = 'live';
 
+  // Constant Rescuer Deployment Base Coordinates
+  const BASE_LAT = 14.479100;
+  const BASE_LNG = 120.898000;
+  const METERS_PER_DEGREE = 111320;
+
+  function processGeolocationAndVitals(rLat, rLng, heading, distCm, hr, br, count) {
+    const distM = distCm / 100;
+    const headingRad = (heading * Math.PI) / 180;
+    
+    // Geolocation offsets vector math
+    const deltaLat = (distM * Math.cos(headingRad)) / METERS_PER_DEGREE;
+    const deltaLng = (distM * Math.sin(headingRad)) / (METERS_PER_DEGREE * Math.cos((rLat * Math.PI) / 180));
+    
+    const tLat = rLat + deltaLat;
+    const tLng = rLng + deltaLng;
+    
+    // Distance offset from Rescuer command camp
+    const dy = (tLat - BASE_LAT) * METERS_PER_DEGREE;
+    const dx = (tLng - BASE_LNG) * METERS_PER_DEGREE * Math.cos((BASE_LAT * Math.PI) / 180);
+    const rangeFromBase = Math.sqrt(dx * dx + dy * dy);
+
+    // Diagnostics engine using clinical bounds
+    let symptoms = [];
+    if (hr > 100) symptoms.push("Tachycardia [High HR]");
+    else if (hr < 60) symptoms.push("Bradycardia [Low HR]");
+    if (br > 20) symptoms.push("Tachypnea [Rapid BR]");
+    else if (br < 12) symptoms.push("Bradypnea [Low BR]");
+    
+    const statusText = symptoms.length === 0 ? "Stable / Normal Vitals" : symptoms.join(" + ");
+
+    return {
+      ts: Date.now(),
+      lat: tLat.toFixed(6),
+      lng: tLng.toFixed(6),
+      range: rangeFromBase.toFixed(1),
+      condition: statusText,
+      hr,
+      br,
+      count
+    };
+  }
+
+  function appendDeduplicatedLog(log) {
+    if (detectionHistory.length === 0) {
+      detectionHistory = [log];
+      return;
+    }
+    
+    const last = detectionHistory[0];
+    
+    // Deduplication rules
+    const matchesLocation = Math.abs(parseFloat(log.range) - parseFloat(last.range)) < 1.5;
+    const matchesHeart = Math.abs(log.hr - last.hr) <= 4.0;
+    const matchesBreath = Math.abs(log.br - last.br) <= 2.0;
+    const matchesCount = log.count === last.count;
+
+    if (matchesLocation && matchesHeart && matchesBreath && matchesCount) {
+      // Duplicate reading from the same person; skip entry creation to avoid flooding
+      return;
+    }
+    
+    detectionHistory = [log, ...detectionHistory].slice(0, 50);
+  }
+
   onMount(() => {
-    ws = new WebSocket(`ws://localhost:8000/ws`);
+    ws = new WebSocket(`ws://localhost:8001/ws`);
     ws.onopen = () => (connected = true);
     ws.onclose = () => (connected = false);
     ws.onmessage = (e) => {
       const data = JSON.parse(e.data);
-      heartRate   = data.heart_rate   ?? heartRate;
-      breathRate  = data.breath_rate  ?? breathRate;
-      distance    = data.distance     ?? distance;
-      temperature = data.temperature  ?? temperature;
-      humidity    = data.humidity     ?? humidity;
+      heartRate    = data.heart_rate    ?? heartRate;
+      breathRate   = data.breath_rate   ?? breathRate;
+      distance     = data.distance      ?? distance;
+      temperature  = data.temperature   ?? temperature;
+      humidity     = data.humidity      ?? humidity;
+      targetsCount = data.targets_count ?? targetsCount;
       if (data.gps) gps = { ...gps, ...data.gps };
 
+      // Append data to chart stream
       history = [...history, {
-        ts: Date.now(),
-        heartRate,
-        breathRate,
-        distance,
-        temperature,
-        humidity,
+        ts: Date.now(), heartRate, breathRate, distance, temperature, humidity
       }].slice(-3600);
+
+      // Evaluate for unique history tracking logs if active human pulse is located
+      if (heartRate > 0) {
+        const diagnosticRecord = processGeolocationAndVitals(
+          gps.lat, gps.lng, gps.heading, distance, heartRate, breathRate, targetsCount
+        );
+        appendDeduplicatedLog(diagnosticRecord);
+      }
     };
   });
 
@@ -46,94 +117,106 @@
   <nav class="tab-bar">
     <div class="tab-brand">
       <span class="brand-icon">🤖</span>
-      <span class="brand-name">LifeBot</span>
+      <span class="brand-name">RescueBot Core</span>
     </div>
     <div class="tabs">
       <button class="tab-btn" class:active={activeTab === 'live'} on:click={() => (activeTab = 'live')}>
-        <span class="tab-icon">📡</span> Live View
+        <span class="tab-icon">📡</span> Live UI Feed
       </button>
       <button class="tab-btn" class:active={activeTab === 'advanced'} on:click={() => (activeTab = 'advanced')}>
         <span class="tab-icon">📊</span> Advanced Stats
       </button>
+      <button class="tab-btn" class:active={activeTab === 'history'} on:click={() => (activeTab = 'history')}>
+        <span class="tab-icon">📜</span> Detection Log ({detectionHistory.length})
+      </button>
     </div>
     <div class="tab-status">
       <span class="status-dot" class:online={connected}></span>
-      <span class="status-text">{connected ? 'LIVE' : 'OFFLINE'}</span>
+      <span class="status-text">{connected ? 'LIVESTREAM' : 'OFFLINE'}</span>
     </div>
   </nav>
 
   <div class="tab-content">
     {#if activeTab === 'live'}
-      <LiveView {heartRate} {breathRate} {distance} {temperature} {humidity} {gps} {connected} />
-    {:else}
+      <LiveView {heartRate} {breathRate} {distance} {temperature} {humidity} {gps} {connected} {targetsCount} {BASE_LAT} {BASE_LNG} />
+    {:else if activeTab === 'advanced'}
       <AdvancedStats {history} />
+    {:else}
+      <div class="history-view">
+        <div class="panel-header">📋 Unique Target Detection Ledger</div>
+        <div class="table-container">
+          {#if detectionHistory.length === 0}
+            <div class="empty-state">No human signatures indexed yet. Searching...</div>
+          {:else}
+            <table class="log-table">
+              <thead>
+                <tr>
+                  <th>Timestamp</th>
+                  <th>Target Count</th>
+                  <th>Estimated Coordinates</th>
+                  <th>Distance from Command Base</th>
+                  <th>Vitals Signature</th>
+                  <th>Clinical Condition (Mayo/ALA)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each detectionHistory as log}
+                  <tr>
+                    <td>{new Date(log.ts).toLocaleTimeString()}</td>
+                    <td><span class="badge-count">{log.count} Person(s)</span></td>
+                    <td class="geo-txt">{log.lat}°N, {log.lng}°E</td>
+                    <td class="yellow">{log.range} meters</td>
+                    <td>❤️ {log.hr} BPM / 🫁 {log.br} RPM</td>
+                    <td class="condition-cell">{log.condition}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          {/if}
+        </div>
+      </div>
     {/if}
   </div>
 </div>
 
 <style>
+  /* Base structural layout components */
   :global(*, *::before, *::after) { box-sizing: border-box; }
   :global(body) {
-    margin: 0;
-    background: #080b10;
-    color: #fff;
-    font-family: 'Courier New', 'Consolas', monospace;
-    overflow: hidden;
-    height: 100dvh;
+    margin: 0; background: #080b10; color: #fff;
+    font-family: 'Courier New', 'Consolas', monospace; overflow: hidden; height: 100dvh;
   }
-  :global(#app) {
-    width: 100%;
-    max-width: 100%;
-    margin: 0;
-    border: none;
-    min-height: 100dvh;
-    text-align: left;
-  }
-  .shell {
-    display: flex;
-    flex-direction: column;
-    height: 100dvh;
-    overflow: hidden;
-  }
+  .shell { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
   .tab-bar {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    padding: 0 1rem;
-    background: rgba(8,11,16,0.97);
-    border-bottom: 1px solid rgba(0,255,136,0.15);
-    height: 48px;
-    flex-shrink: 0;
-    z-index: 100;
+    display: flex; align-items: center; gap: 1rem; padding: 0 1rem;
+    background: #0b0f19; border-bottom: 1px solid rgba(0,255,136,0.15); height: 48px; flex-shrink: 0;
   }
-  .tab-brand { display: flex; align-items: center; gap: 0.4rem; margin-right: 0.5rem; }
-  .brand-icon { font-size: 1.1rem; }
-  .brand-name { font-size: 0.8rem; font-weight: bold; letter-spacing: 3px; text-transform: uppercase; color: #00ff88; }
+  .tab-brand { display: flex; align-items: center; gap: 0.4rem; }
+  .brand-name { font-size: 0.8rem; font-weight: bold; letter-spacing: 2px; color: #00ff88; }
   .tabs { display: flex; gap: 0.25rem; flex: 1; }
   .tab-btn {
-    background: transparent;
-    border: 1px solid transparent;
-    color: #555;
-    font-family: inherit;
-    font-size: 0.75rem;
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-    padding: 0.35rem 0.85rem;
-    border-radius: 4px;
-    cursor: pointer;
-    transition: color 0.2s, background 0.2s;
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
+    background: transparent; border: 1px solid transparent; color: #555;
+    font-family: inherit; font-size: 0.75rem; letter-spacing: 1px;
+    text-transform: uppercase; padding: 0.35rem 0.85rem; border-radius: 4px; cursor: pointer;
   }
   .tab-btn:hover { color: #aaa; background: rgba(255,255,255,0.04); }
   .tab-btn.active { color: #00ff88; background: rgba(0,255,136,0.08); border-color: rgba(0,255,136,0.2); }
-  .tab-icon { font-size: 0.9rem; }
-  .tab-status { display: flex; align-items: center; gap: 0.4rem; margin-left: auto; }
-  .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #333; transition: background 0.3s; }
-  .status-dot.online { background: #00ff88; box-shadow: 0 0 6px #00ff88; animation: pulse-dot 2s ease-in-out infinite; }
-  @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
-  .status-text { font-size: 0.7rem; letter-spacing: 2px; color: #555; }
-  .status-dot.online + .status-text { color: #00ff88; }
+  .tab-status { display: flex; align-items: center; gap: 0.4rem; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #333; }
+  .status-dot.online { background: #00ff88; box-shadow: 0 0 8px #00ff88; }
+  .status-text { font-size: 0.7rem; color: #666; letter-spacing: 1px; }
   .tab-content { flex: 1; overflow: hidden; position: relative; }
+
+  /* History Panel Layout styles */
+  .history-view { padding: 1.5rem; height: 100%; overflow-y: auto; background: #080b10; }
+  .panel-header { font-size: 1rem; letter-spacing: 2px; text-transform: uppercase; color: #00ff88; margin-bottom: 1rem; }
+  .table-container { background: #0e121f; border: 1px solid #1a2238; border-radius: 6px; padding: 1rem; }
+  .empty-state { padding: 3rem; text-align: center; color: #44567a; font-size: 0.85rem; }
+  .log-table { width: 100%; border-collapse: collapse; font-size: 0.75rem; text-align: left; }
+  .log-table th { padding: 0.75rem; border-bottom: 2px solid #1a2238; color: #44567a; text-transform: uppercase; }
+  .log-table td { padding: 0.75rem; border-bottom: 1px solid #141b2d; color: #b2c0d8; }
+  .geo-txt { color: #00ff88; }
+  .yellow { color: #ffcc00; }
+  .badge-count { background: rgba(0,200,255,0.1); border: 1px solid rgba(0,200,255,0.3); padding: 2px 6px; border-radius: 3px; color: #00c8ff; }
+  .condition-cell { font-weight: bold; color: #ff4444; }
 </style>
