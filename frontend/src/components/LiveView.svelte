@@ -1,6 +1,6 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import Minimap from './Minimap.svelte';
+  import Minimap from './MiniMap.svelte';
 
   export let heartRate = 0;
   export let breathRate = 0;

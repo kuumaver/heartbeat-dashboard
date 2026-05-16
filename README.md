@@ -93,13 +93,15 @@ cd backend
 ```bash
 python -m venv venv
 
+python -m venv lifesaving-env (for raspberry pi 5)
+
 ```
 
 
 3. Activate the virtual environment:
 * **Windows (Command Prompt):** `venv\Scripts\activate`
 * **Windows (PowerShell):** `.\venv\Scripts\Activate.ps1`
-* **macOS / Linux:** `source venv/bin/activate`
+* **macOS / Linux:** `source lifesaving-env/bin/activate`
 
 
 4. Install all python requirements listed in the config file:
