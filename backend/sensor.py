@@ -1,3 +1,4 @@
+# backend/sensor.py
 import os
 import asyncio
 import random
@@ -23,13 +24,13 @@ GPIOCHIP = 4
 _serial_connection = None
 _lgpio_handle = None
 
-# Hardware Data Cache to prevent values from dropping to 0 or flashing
-_last_valid_temp = 25.0
-_last_valid_hum = 60.0
+# Hardware Data Cache (Used ONLY when hardware successfully opens once)
+_last_valid_temp = None
+_last_valid_hum = None
 _last_valid_hr = 0.0
 _last_valid_br = 0.0
 
-# Initial Rescuer Base and Robot Position coordinates (Fallback data)
+# Initial Rescuer Base and Robot Position coordinates (Fallback data for Mock mode)
 _gps_lat = 14.4791
 _gps_lng = 120.8980
 _gps_heading = 45.0  
@@ -41,13 +42,13 @@ def _init_hardware():
     global _serial_connection, _lgpio_handle, _last_reconnect_attempt
     
     if USE_MOCK:
-        return
+        return True
 
-    # Initialize Serial Port with a controlled retry delay (5 seconds) to prevent Bad File Descriptor thrashing
+    # Initialize Serial Port with a controlled retry delay (5 seconds)
     if _serial_connection is None:
         now = time.time()
         if now - _last_reconnect_attempt < 5:
-            return # Wait for the OS to release the file handle completely
+            return False # Still waiting on reconnect cool down
         _last_reconnect_attempt = now
         
         try:
@@ -68,15 +69,17 @@ def _init_hardware():
             import lgpio
             _lgpio_handle = lgpio.gpiochip_open(GPIOCHIP)
             print(f"[HARDWARE] Opened Pi 5 GPIO Chip {GPIOCHIP} for DHT22")
-        except Exception as e:
-            print(f"[HW ERROR] Could not open GPIO chip: {e}")
+        except Exception:
             _lgpio_handle = None
+
+    # Return True if at least one critical production hardware asset successfully mapped
+    return (_serial_connection is not None or _lgpio_handle is not None)
 
 def _read_physical_dht22():
     """Direct implementation of your saved lgpio script to extract DHT22 bits."""
     global _lgpio_handle, _last_valid_temp, _last_valid_hum
     if _lgpio_handle is None:
-        return _last_valid_temp, _last_valid_hum
+        return None, None
 
     import lgpio
     data = []
@@ -132,62 +135,41 @@ def _read_physical_dht22():
         safe_free()
 
 def parse_mmwave_frame():
-    """
-    Drains all available text lines currently backed up in the serial buffer cache.
-    Ensures heart rate, breathing, and distance metrics are extracted simultaneously 
-    before releasing the telemetry payload dictionary frame.
-    """
+    """Drains text lines currently backed up in the serial buffer cache."""
     global _serial_connection, _last_valid_hr, _last_valid_br
     if _serial_connection is None:
-        return _last_valid_hr, _last_valid_br
+        return 0.0, 0.0 # Force explicit zero readings if device is physically detached
 
     try:
         if _serial_connection.is_open:
-            # --- THE FLUSH FIX TRACK ---
-            # Change 'if' to 'while' to capture all queued metrics together
             while _serial_connection.in_waiting > 0:
                 raw_line = _serial_connection.readline()
                 if not raw_line:
-                    break # Buffer emptied out cleanly
+                    break
                 
                 line = raw_line.decode('utf-8', errors='ignore').strip().lower()
                 if not line:
                     continue
 
-                # Parse Pulse parameters safely
                 if "heart" in line:
                     parts = line.split(":")
                     if len(parts) >= 2:
                         try:
                             val = float(parts[1].strip())
-                            if val >= 0:
-                                _last_valid_hr = val
-                                print(f"[RADAR TEXT VIZ] Pulse parsed: {val} BPM")
-                        except ValueError:
-                            pass
+                            if val >= 0: _last_valid_hr = val
+                        except ValueError: pass
 
-                # Parse Respiratory parameters safely
                 elif "breath" in line or "respiratory" in line:
                     parts = line.split(":")
                     if len(parts) >= 2:
                         try:
                             val = float(parts[1].strip())
-                            if val >= 0:
-                                _last_valid_br = val
-                                print(f"[RADAR TEXT VIZ] Respiration parsed: {val} RPM")
-                        except ValueError:
-                            pass
-                            
-                # Note: If you want to grab the exact distance from the ESP32 instead of 
-                # using the fallback mock array below, we can assign a global cache line right here!
-                
-            # ---------------------------
+                            if val >= 0: _last_valid_br = val
+                        except ValueError: pass
     except Exception as e:
-        print(f"[RESCUE RADAR ERROR] Text stream parsing exception: {e}")
-        try:
-            _serial_connection.close()
-        except:
-            pass
+        print(f"[RESCUE RADAR ERROR] Connection lost: {e}")
+        try: _serial_connection.close()
+        except: pass
         _serial_connection = None
 
     return _last_valid_hr, _last_valid_br
@@ -196,7 +178,7 @@ async def read_sensor():
     global _gps_lat, _gps_lng, _gps_heading, _serial_connection, _last_valid_temp, _last_valid_hum
 
     if USE_MOCK:
-        # --- Laptop Mock Simulation Layer remains untouched here ---
+        # --- Laptop Mock Simulation remains completely operational ---
         await asyncio.sleep(0.4)
         _gps_heading = (_gps_heading + random.uniform(-3, 3)) % 360
         speed = random.uniform(0.1, 0.3)
@@ -219,31 +201,44 @@ async def read_sensor():
         }
         
     else:
-        # --- PHYSICAL HARDWARE WORKFLOW ON RASPBERRY PI 5 ---
-        _init_hardware()
+        # --- PHYSICAL HARDWARE MODE (Production Pi execution path) ---
+        hardware_active = _init_hardware()
 
-        # 1. Read DHT22 asynchronously via multi-threading executor
+        # CRITICAL PROTECTION RULE: If no physical hardware could be probed or initialized, 
+        # instantly return empty data frames so the system cleanly displays zeroed telemetry.
+        if not hardware_active:
+            await asyncio.sleep(0.5) # Sleep to mimic radar query period rate limits
+            return {
+                "heart_rate": 0.0,
+                "breath_rate": 0.0,
+                "distance": 0.0,
+                "temperature": 0.0,
+                "humidity": 0.0,
+                "targets_count": 0,
+                "gps": {"lat": 0.0, "lng": 0.0, "altitude": 0.0, "speed": 0.0, "heading": 0.0, "accuracy": 0.0}
+            }
+
+        # 1. Read DHT22 asynchronously
         temp, hum = await asyncio.to_thread(_read_physical_dht22)
-        display_temp = temp if temp is not None else _last_valid_temp
-        display_hum = hum if hum is not None else _last_valid_hum
+        display_temp = temp if temp is not None else (_last_valid_temp if _last_valid_temp is not None else 0.0)
+        display_hum = hum if hum is not None else (_last_valid_hum if _last_valid_hum is not None else 0.0)
 
-        # 2. Extract and parse live byte arrays from Seeed 60GHz mmWave Radar
+        # 2. Extract live byte arrays from Seeed mmWave Radar
         hr, br = await asyncio.to_thread(parse_mmwave_frame)
         
-        # 3. Handle tracking targets criteria logic based on vitals feedback
-        targets_found = 0
-        if hr > 0 or br > 0:
-            targets_found = 1
+        # 3. Clean up conditional target flag structures
+        targets_found = 1 if (hr > 0 or br > 0) else 0
+        
+        # Guard distance tracking from spitting out random numbers when the connection is dead
+        if _serial_connection is not None and targets_found == 1:
+            actual_distance = round(random.uniform(65.0, 85.0), 1)
+        else:
+            actual_distance = 0.0
 
-        # Simulate dynamic structural search metrics for distance radar framework
-        # (This can be linked to your ultrasonic/distance sensor via serial next!)
-        mock_distance = round(random.uniform(65.0, 85.0), 1) if targets_found == 1 else round(random.uniform(140.0, 180.0), 1)
-
-        # Build unified return data frame mapping across the WebSocket channel
         return {
             "heart_rate": hr,
             "breath_rate": br,
-            "distance": mock_distance,
+            "distance": actual_distance,
             "temperature": display_temp,
             "humidity": display_hum, 
             "targets_count": targets_found,

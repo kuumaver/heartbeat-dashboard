@@ -14,10 +14,9 @@
   let ws;
 
   let history = []; 
-  let detectionHistory = []; // Filtered tracking ledger
+  let detectionHistory = [];
   let activeTab = 'live';
 
-  // Constant Rescuer Deployment Base Coordinates
   const BASE_LAT = 14.479100;
   const BASE_LNG = 120.898000;
   const METERS_PER_DEGREE = 111320;
@@ -26,26 +25,24 @@
     const distM = distCm / 100;
     const headingRad = (heading * Math.PI) / 180;
     
-    // Geolocation offsets vector math
     const deltaLat = (distM * Math.cos(headingRad)) / METERS_PER_DEGREE;
     const deltaLng = (distM * Math.sin(headingRad)) / (METERS_PER_DEGREE * Math.cos((rLat * Math.PI) / 180));
     
     const tLat = rLat + deltaLat;
     const tLng = rLng + deltaLng;
     
-    // Distance offset from Rescuer command camp
     const dy = (tLat - BASE_LAT) * METERS_PER_DEGREE;
     const dx = (tLng - BASE_LNG) * METERS_PER_DEGREE * Math.cos((BASE_LAT * Math.PI) / 180);
     const rangeFromBase = Math.sqrt(dx * dx + dy * dy);
 
-    // Diagnostics engine using clinical bounds
+    // CRITICAL FIX: Simplified warnings without emojis or bloated labels
     let symptoms = [];
-    if (hr > 100) symptoms.push("Tachycardia [High HR]");
-    else if (hr < 60) symptoms.push("Bradycardia [Low HR]");
-    if (br > 20) symptoms.push("Tachypnea [Rapid BR]");
-    else if (br < 12) symptoms.push("Bradypnea [Low BR]");
+    if (hr > 100) symptoms.push("Tachycardia");
+    else if (hr < 60) symptoms.push("Bradycardia");
+    if (br > 20) symptoms.push("Tachypnea");
+    else if (br < 12) symptoms.push("Bradypnea");
     
-    const statusText = symptoms.length === 0 ? "Stable / Normal Vitals" : symptoms.join(" + ");
+    const statusText = symptoms.length === 0 ? "Stable" : symptoms.join(" + ");
 
     return {
       ts: Date.now(),
@@ -66,15 +63,12 @@
     }
     
     const last = detectionHistory[0];
-    
-    // Deduplication rules
     const matchesLocation = Math.abs(parseFloat(log.range) - parseFloat(last.range)) < 1.5;
     const matchesHeart = Math.abs(log.hr - last.hr) <= 4.0;
     const matchesBreath = Math.abs(log.br - last.br) <= 2.0;
     const matchesCount = log.count === last.count;
 
     if (matchesLocation && matchesHeart && matchesBreath && matchesCount) {
-      // Duplicate reading from the same person; skip entry creation to avoid flooding
       return;
     }
     
@@ -95,12 +89,10 @@
       targetsCount = data.targets_count ?? targetsCount;
       if (data.gps) gps = { ...gps, ...data.gps };
 
-      // Append data to chart stream
       history = [...history, {
         ts: Date.now(), heartRate, breathRate, distance, temperature, humidity
       }].slice(-3600);
 
-      // Evaluate for unique history tracking logs if active human pulse is located
       if (heartRate > 0) {
         const diagnosticRecord = processGeolocationAndVitals(
           gps.lat, gps.lng, gps.heading, distance, heartRate, breathRate, targetsCount
@@ -121,13 +113,13 @@
     </div>
     <div class="tabs">
       <button class="tab-btn" class:active={activeTab === 'live'} on:click={() => (activeTab = 'live')}>
-        <span class="tab-icon">📡</span> Live UI Feed
+        📡 Live UI Feed
       </button>
       <button class="tab-btn" class:active={activeTab === 'advanced'} on:click={() => (activeTab = 'advanced')}>
-        <span class="tab-icon">📊</span> Advanced Stats
+        📊 Advanced Stats
       </button>
       <button class="tab-btn" class:active={activeTab === 'history'} on:click={() => (activeTab = 'history')}>
-        <span class="tab-icon">📜</span> Detection Log ({detectionHistory.length})
+        📜 Log ({detectionHistory.length})
       </button>
     </div>
     <div class="tab-status">
@@ -140,10 +132,12 @@
     {#if activeTab === 'live'}
       <LiveView {heartRate} {breathRate} {distance} {temperature} {humidity} {gps} {connected} {targetsCount} {BASE_LAT} {BASE_LNG} />
     {:else if activeTab === 'advanced'}
-      <AdvancedStats {history} />
+      <div class="pane-scroll-box">
+        <AdvancedStats {history} />
+      </div>
     {:else}
-      <div class="history-view">
-        <div class="panel-header">📋 Unique Target Detection Ledger</div>
+      <div class="history-view pane-scroll-box">
+        <div class="panel-header">Unique Target Detection Ledger</div>
         <div class="table-container">
           {#if detectionHistory.length === 0}
             <div class="empty-state">No human signatures indexed yet. Searching...</div>
@@ -156,7 +150,7 @@
                   <th>Estimated Coordinates</th>
                   <th>Distance from Command Base</th>
                   <th>Vitals Signature</th>
-                  <th>Clinical Condition (Mayo/ALA)</th>
+                  <th>Clinical Condition</th>
                 </tr>
               </thead>
               <tbody>
@@ -166,7 +160,7 @@
                     <td><span class="badge-count">{log.count} Person(s)</span></td>
                     <td class="geo-txt">{log.lat}°N, {log.lng}°E</td>
                     <td class="yellow">{log.range} meters</td>
-                    <td>❤️ {log.hr} BPM / 🫁 {log.br} RPM</td>
+                    <td>{log.hr} BPM / {log.br} RPM</td>
                     <td class="condition-cell">{log.condition}</td>
                   </tr>
                 {/each}
@@ -180,7 +174,6 @@
 </div>
 
 <style>
-  /* Base structural layout components */
   :global(*, *::before, *::after) { box-sizing: border-box; }
   :global(body) {
     margin: 0; background: #080b10; color: #fff;
@@ -207,8 +200,13 @@
   .status-text { font-size: 0.7rem; color: #666; letter-spacing: 1px; }
   .tab-content { flex: 1; overflow: hidden; position: relative; }
 
-  /* History Panel Layout styles */
-  .history-view { padding: 1.5rem; height: 100%; overflow-y: auto; background: #080b10; }
+  .pane-scroll-box {
+    width: 100%;
+    height: 100%;
+    overflow-y: auto;
+  }
+
+  .history-view { padding: 1.5rem; background: #080b10; }
   .panel-header { font-size: 1rem; letter-spacing: 2px; text-transform: uppercase; color: #00ff88; margin-bottom: 1rem; }
   .table-container { background: #0e121f; border: 1px solid #1a2238; border-radius: 6px; padding: 1rem; }
   .empty-state { padding: 3rem; text-align: center; color: #44567a; font-size: 0.85rem; }
@@ -219,4 +217,12 @@
   .yellow { color: #ffcc00; }
   .badge-count { background: rgba(0,200,255,0.1); border: 1px solid rgba(0,200,255,0.3); padding: 2px 6px; border-radius: 3px; color: #00c8ff; }
   .condition-cell { font-weight: bold; color: #ff4444; }
+
+  @media (min-width: 1920px) and (min-height: 1080px) {
+    :global(body) { font-size: 16px; }
+    .brand-name { font-size: 1rem; }
+    .tab-btn { font-size: 0.9rem; }
+    .panel-header { font-size: 1.25rem; }
+    .log-table { font-size: 0.9rem; }
+  }
 </style>
