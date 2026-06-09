@@ -4,6 +4,7 @@ import asyncio
 import random
 import math
 import time
+from gps_parser import GPSReader
 
 load_dotenv = lambda: None
 try:
@@ -23,6 +24,7 @@ GPIOCHIP = 4
 # Global handles to persist connections
 _serial_connection = None
 _lgpio_handle = None
+_gps_reader = None
 
 # Hardware Data Cache (Used ONLY when hardware successfully opens once)
 _last_valid_temp = None
@@ -35,11 +37,15 @@ _gps_lat = 14.4791
 _gps_lng = 120.8980
 _gps_heading = 45.0  
 
+# Cache last known GPS in case satellite fix is temporarily lost
+_last_known_lat = 14.4791
+_last_known_lng = 120.8980
+
 _last_reconnect_attempt = 0
 
 def _init_hardware():
     """Dynamically sets up the hardware pins and ports if they are not already open."""
-    global _serial_connection, _lgpio_handle, _last_reconnect_attempt
+    global _serial_connection, _lgpio_handle, _gps_reader, _last_reconnect_attempt
     
     if USE_MOCK:
         return True
@@ -71,9 +77,16 @@ def _init_hardware():
             print(f"[HARDWARE] Opened Pi 5 GPIO Chip {GPIOCHIP} for DHT22")
         except Exception:
             _lgpio_handle = None
+    
+    # --- GPS INITIALIZATION ---
+    if _gps_reader is None:
+        try:
+            _gps_reader = GPSReader(port="/dev/ttyAMA0", baudrate=9600)
+            print("[HARDWARE] Bonded to GPS Module on /dev/ttyAMA0")
+        except Exception:
+            _gps_reader = None
 
-    # Return True if at least one critical production hardware asset successfully mapped
-    return (_serial_connection is not None or _lgpio_handle is not None)
+    return (_serial_connection is not None or _lgpio_handle is not None or _gps_reader is not None)
 
 def _read_physical_dht22():
     """Direct implementation of your saved lgpio script to extract DHT22 bits."""
@@ -176,6 +189,7 @@ def parse_mmwave_frame():
 
 async def read_sensor():
     global _gps_lat, _gps_lng, _gps_heading, _serial_connection, _last_valid_temp, _last_valid_hum
+    global _gps_reader, _last_known_lat, _last_known_lng
 
     if USE_MOCK:
         # --- Laptop Mock Simulation remains completely operational ---
@@ -234,6 +248,20 @@ async def read_sensor():
             actual_distance = round(random.uniform(65.0, 85.0), 1)
         else:
             actual_distance = 0.0
+        
+        current_lat, current_lng = _last_known_lat, _last_known_lng
+        current_alt, current_speed, current_accuracy = 12.4, 0.0, 5.0
+        
+        if _gps_reader:
+            await asyncio.to_thread(_gps_reader.update)
+            if _gps_reader.current_data.has_fix:
+                _last_known_lat = current_lat = _gps_reader.current_data.latitude
+                _last_known_lng = current_lng = _gps_reader.current_data.longitude
+                current_alt = _gps_reader.current_data.altitude
+                
+                # Convert knots to meters per second for the frontend
+                current_speed = _gps_reader.current_data.speed_knots * 0.514444
+                current_accuracy = _gps_reader.current_data.hdop
 
         return {
             "heart_rate": hr,
@@ -243,11 +271,11 @@ async def read_sensor():
             "humidity": display_hum, 
             "targets_count": targets_found,
             "gps": {
-                "lat": 14.4791, 
-                "lng": 120.8980, 
-                "altitude": 12.4, 
-                "speed": 0.0, 
-                "heading": 120.0, 
-                "accuracy": 1.2
+                "lat": current_lat, 
+                "lng": current_lng, 
+                "altitude": current_alt, 
+                "speed": round(current_speed, 2), 
+                "heading": 120.0, # You can update this later if your GPS calculates heading
+                "accuracy": round(current_accuracy, 1)
             }
         }
