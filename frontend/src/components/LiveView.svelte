@@ -38,6 +38,10 @@
     if (isBradypnea) diagnoses.push("Bradypnea");
     return diagnoses.length === 0 ? "Stable" : diagnoses.join(" + ");
   })();
+
+  $: alertState = (targetsCount > 0 && heartRate > 0) ? 'confirmed' :
+                  (targetsCount === 0 && heartRate > 0) ? 'possible' :
+                  (targetsCount > 0 && heartRate === 0) ? 'nopulse' : 'none';
 </script>
 
 <div class="lv-root">
@@ -89,18 +93,23 @@
     </div>
   </div>
 
-  {#if heartRate > 0}
-    <div class="alert-banner-box" class:danger={targetsCount > 1 || isTachycardia || isTachypnea}>
-      <div class="alert-flash">ALARM: SURVIVOR IDENTIFIED</div>
-      <div class="alert-details">
-        {#if targetsCount > 1}
-          <span class="highlight-warn">Multiple Targets Found ({targetsCount})</span><br>
-        {:else}
-          <span>Single Human Signature Found</span><br>
+  {#if alertState !== 'none'}
+    <div class="alert-banner-box {alertState}">
+      <div class="alert-flash">
+        {#if alertState === 'possible'}
+          WARNING: POSSIBLE HUMAN PRESENCE
+        {:else if alertState === 'confirmed'}
+          ALERT: HUMAN FOUND
+        {:else if alertState === 'nopulse'}
+          HUMAN FOUND BUT NO PULSE
         {/if}
-        Target: {tLat.toFixed(6)}°N, {tLng.toFixed(6)}°E <br>
-        Range: <span class="yellow-txt">{rangeFromBase.toFixed(1)}m</span> <br>
-        Status: <span class="cond-txt">{clinicalCondition}</span>
+      </div>
+      <div class="alert-details">
+        {#if heartRate > 0}
+          Status: <span class="cond-txt">{clinicalCondition}</span>
+        {:else}
+          <span class="cond-txt">Vital signs absent</span>
+        {/if}
       </div>
     </div>
   {/if}
@@ -176,23 +185,29 @@
   
   /* MINIMALIST ALERTS */
   .alert-banner-box {
-    position: absolute; top: 4.5rem; left: 50%; transform: translateX(-50%);
-    width: 320px; background: rgba(11,25,16,0.95); border: 1px solid #00ff88; border-radius: 4px;
+    position: absolute; top: 4.5rem; left: 50%;
+    transform: translateX(-50%);
+    width: 320px; border-radius: 4px;
     padding: 0.6rem; backdrop-filter: blur(8px); z-index: 50;
+    border: 1px solid transparent; /* default */
   }
-  .alert-banner-box.danger { background: rgba(30,10,14,0.95); border-color: #ff4444; }
-  .alert-flash { font-weight: bold; font-size: 0.7rem; letter-spacing: 1px; color: #00ff88; margin-bottom: 0.2rem; }
-  .alert-banner-box.danger .alert-flash { color: #ff4444; }
+
+  /* Orange state: Radar only */
+  .alert-banner-box.possible { background: rgba(25, 15, 0, 0.95); border-color: #ffaa00; }
+  .alert-banner-box.possible .alert-flash, .alert-banner-box.possible .cond-txt { color: #ffaa00; }
+
+  /* Green state: Radar + Camera */
+  .alert-banner-box.confirmed { background: rgba(11, 25, 16, 0.95); border-color: #00ff88; }
+  .alert-banner-box.confirmed .alert-flash { color: #00ff88; }
+  .alert-banner-box.confirmed .cond-txt { color: #ff5555; } /* Keep medical issues red */
+
+  /* Red state: Camera only, no pulse */
+  .alert-banner-box.nopulse { background: rgba(30, 10, 14, 0.95); border-color: #ff4444; }
+  .alert-banner-box.nopulse .alert-flash, .alert-banner-box.nopulse .cond-txt { color: #ff4444; }
+
+  .alert-flash { font-weight: bold; font-size: 0.7rem; letter-spacing: 1px; margin-bottom: 0.2rem; }
   .alert-details { font-size: 0.65rem; line-height: 1.4; color: #d1dfec; }
-  .highlight-warn { color: #ff3b3b; font-weight: bold; }
-  .yellow-txt { color: #ffcc00; }
-  .cond-txt { color: #ff5555; font-weight: bold; }
-  
-  .proximity-warning {
-    position: absolute; bottom: 3rem; left: 50%; transform: translateX(-50%);
-    background: rgba(255,102,0,0.9); border-radius: 4px; padding: 0.4rem 1rem;
-    color: #fff; font-size: 0.65rem; font-weight: bold; letter-spacing: 1px; z-index: 40;
-  }
+  .cond-txt { font-weight: bold; }
 
   /* ABSOLUTE HUD BOUNDARIES SETUP */
   .overlay-top, .overlay-left, .overlay-right, .overlay-bottom { 

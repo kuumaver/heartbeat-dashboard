@@ -2,6 +2,7 @@ import os
 import cv2
 import asyncio
 import time
+import threading
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,6 +20,12 @@ app.add_middleware(
 )
 
 # =========================================================================
+# GLOBAL CAMERA STATE
+# =========================================================================
+latest_jpeg = None
+current_camera_targets = 0
+
+# =========================================================================
 # INTEGRATED PICAMERA2 + OBJECT DETECTION LAYER
 # =========================================================================
 print("[AI CORE] Initializing MobileNet SSD v3 Model...")
@@ -34,7 +41,6 @@ except Exception as e:
 configPath = "/home/lifesg/OD/ssd_mobilenet_v3_large_coco_2020_01_14.pbtxt"
 weightsPath = "/home/lifesg/OD/frozen_inference_graph.pb"
 
-# Instantiate the DNN model using your exact parameters
 try:
     net = cv2.dnn_DetectionModel(weightsPath, configPath)
     net.setInputSize(320, 320)
@@ -45,21 +51,20 @@ try:
 except Exception as e:
     print(f"[AI ERROR] Model weights failed to load: {e}")
 
-# Thresholds and colors matching your working layout script
 classThresholds = {'person': 0.45, 'cat': 0.60, 'dog': 0.60}
 classColors = {'person': (0, 255, 0), 'cat': (255, 165, 0), 'dog': (0, 165, 255)}
 
 def process_and_draw_frame(img, nms=0.2, objects=['person']):
-    """Executes object inference and draws tracking vectors onto the matrix."""
+    """Executes object inference, draws vectors, and returns the detection count."""
+    detected_count = 0
     if len(classThresholds) == 0 or len(classNames) == 0:
-        return img
+        return img, detected_count
         
     minThres = min(classThresholds[o] for o in objects if o in classThresholds)
     classIds, confs, bbox = net.detect(img, confThreshold=minThres, nmsThreshold=nms)
 
     if len(classIds) != 0:
         for classId, confidence, box in zip(classIds.flatten(), confs.flatten(), bbox):
-            # Guard against invalid ID dimensions
             if classId - 1 >= len(classNames):
                 continue
                 
@@ -69,65 +74,61 @@ def process_and_draw_frame(img, nms=0.2, objects=['person']):
                 if confidence < threshold:
                     continue
 
+                detected_count += 1
                 color = classColors.get(className, (0, 255, 0))
-                # Draw high-visibility vector markers for rescuers
                 cv2.rectangle(img, box, color=color, thickness=2)
                 cv2.putText(img, f"SURVIVOR: {round(confidence*100,1)}%", (box[0]+10, box[1]+30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-    return img
+                            
+    return img, detected_count
 
-def generate_camera_frames():
-    """Captures wide field-of-view frames natively using Picamera2 and streams via HTTP MJPEG."""
-    from picamera2 import Picamera2
+def camera_worker_thread():
+    """Background thread that safely manages the single hardware camera lock."""
+    global latest_jpeg, current_camera_targets
     
-    print("[CAMERA INITIALIZATION] Booting Picamera2 wide-angle scaling framework...")
-    picam2 = Picamera2()
-    
-    # --- HERE IS THE ZOOM FIX COMPLETION TRACK ---
-    # 1. Force the camera hardware to open a wide, high-res field of view mode
-    picam2.preview_configuration.main.size = (1280, 720) # Or use (1920, 1080) matching your standalone script!
-    picam2.preview_configuration.main.format = "RGB888"
-    
-    # 2. Tell the internal pipeline to grab the FULL sensor layout matrix before handing it over
-    picam2.configure("preview")
-    
-    # 3. Add an explicit software resize target to downscale to 640x480 for the network streaming pipeline
-    # This compresses the full wide-angle picture without cropping the edges!
-    stream_width, stream_height = 640, 480
-    # ---------------------------------------------
-    
-    picam2.start()
+    try:
+        from picamera2 import Picamera2
+        print("[CAMERA ENGINE] Booting Picamera2 background thread...")
+        picam2 = Picamera2()
+        picam2.preview_configuration.main.size = (1280, 720) 
+        picam2.preview_configuration.main.format = "RGB888"
+        picam2.configure("preview")
+        picam2.start()
+    except Exception as e:
+        print(f"[CAMERA ENGINE] Hardware not found or mock mode active: {e}")
+        return
 
     try:
         while True:
-            # Grab full wide frame array data matrix
             img = picam2.capture_array()
-            
-            # Use OpenCV to smoothly downscale the image matrix while retaining the full lens view
-            img_resized = cv2.resize(img, (stream_width, stream_height), interpolation=cv2.INTER_LINEAR)
-            
-            # Convert RGB array back to BGR for proper model identification drawing colors
+            img_resized = cv2.resize(img, (640, 480), interpolation=cv2.INTER_LINEAR)
             img_bgr = cv2.cvtColor(img_resized, cv2.COLOR_RGB2BGR)
             
-            # Apply your AI model to detect targets and draw bounding vectors
-            processed_frame = process_and_draw_frame(img_bgr)
+            processed_frame, target_count = process_and_draw_frame(img_bgr)
+            current_camera_targets = target_count # Update the global count for the WebSocket
             
-            # Compress processed canvas matrix into JPEG formats
             ret, buffer = cv2.imencode('.jpg', processed_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
-            if not ret:
-                continue
-                
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+            if ret:
+                latest_jpeg = buffer.tobytes()
     except Exception as e:
         print(f"[CAMERA CRASH] Telemetry video thread threw an exception: {e}")
     finally:
         picam2.stop()
         print("[CAMERA ENGINE] Picamera2 resource pipeline released safely.")
 
+# Start the camera isolation thread immediately on boot
+threading.Thread(target=camera_worker_thread, daemon=True).start()
+
+async def generate_camera_frames():
+    """Pulls the latest safe jpeg buffer without touching hardware directly."""
+    while True:
+        if latest_jpeg is not None:
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + latest_jpeg + b'\r\n')
+        await asyncio.sleep(0.05) # Limit to ~20 FPS to prevent network saturation
+
 @app.get("/video_feed")
 async def video_feed_endpoint():
-    """HTTP endpoint serving live object-detection tracking video stream frames."""
     return StreamingResponse(
         generate_camera_frames(),
         media_type="multipart/x-mixed-replace; boundary=frame"
@@ -140,6 +141,12 @@ async def websocket_endpoint(ws: WebSocket):
     try:
         while True:
             data = await read_sensor()
+            
+            # If the physical camera thread is actively providing valid data,
+            # OVERRIDE the radar's hardcoded target count with the real AI visual count.
+            if latest_jpeg is not None:
+                data["targets_count"] = current_camera_targets
+                
             await ws.send_json(data)
     except WebSocketDisconnect:
         print("Client disconnected.")
