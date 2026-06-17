@@ -51,18 +51,30 @@ try:
 except Exception as e:
     print(f"[AI ERROR] Model weights failed to load: {e}")
 
-classThresholds = {'person': 0.45, 'cat': 0.60, 'dog': 0.60}
-classColors = {'person': (0, 255, 0), 'cat': (255, 165, 0), 'dog': (0, 165, 255)}
+# Per-class confidence thresholds
+classThresholds = {
+    'person': 0.45, 
+    'cat':    0.60, 
+    'dog':    0.55,
+}
 
-def process_and_draw_frame(img, nms=0.2, objects=['person']):
-    """Executes object inference, draws vectors, and returns the detection count."""
-    detected_count = 0
+# Colors per class (BGR)
+classColors = {
+    'person': (0, 255, 0),    # green
+    'cat':    (255, 165, 0),  # orange
+    'dog':    (0, 165, 255),  # yellow-orange
+}
+
+def process_and_draw_frame(img, nms=0.2, objects=['person', 'cat', 'dog']):
+    """Executes object inference, draws vectors and stats, and returns the 'person' count."""
     if len(classThresholds) == 0 or len(classNames) == 0:
-        return img, detected_count
+        return img, 0
         
     minThres = min(classThresholds[o] for o in objects if o in classThresholds)
     classIds, confs, bbox = net.detect(img, confThreshold=minThres, nmsThreshold=nms)
 
+    objectInfo = []
+    
     if len(classIds) != 0:
         for classId, confidence, box in zip(classIds.flatten(), confs.flatten(), bbox):
             if classId - 1 >= len(classNames):
@@ -70,17 +82,44 @@ def process_and_draw_frame(img, nms=0.2, objects=['person']):
                 
             className = classNames[classId - 1]
             if className in objects:
+                # Apply per-class threshold
                 threshold = classThresholds.get(className, 0.45)
                 if confidence < threshold:
                     continue
 
-                detected_count += 1
+                objectInfo.append([box, className])
                 color = classColors.get(className, (0, 255, 0))
+
+                # Draw bounding box and labels
                 cv2.rectangle(img, box, color=color, thickness=2)
-                cv2.putText(img, f"SURVIVOR: {round(confidence*100,1)}%", (box[0]+10, box[1]+30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-                            
-    return img, detected_count
+                cv2.putText(img, className.upper(), (box[0]+10, box[1]+30),
+                            cv2.FONT_HERSHEY_COMPLEX, 1, color, 2)
+                cv2.putText(img, str(round(confidence*100, 2)) + "%", (box[0]+200, box[1]+30),
+                            cv2.FONT_HERSHEY_COMPLEX, 1, color, 2)
+
+    # Calculate detection counter per class
+    counts = {}
+    person_count = 0
+    for _, className in objectInfo:
+        counts[className] = counts.get(className, 0) + 1
+        if className == 'person':
+            person_count += 1
+    
+    # Draw counter text block on top left
+    y = 40
+    for className, count in counts.items():
+        color = classColors.get(className, (255, 255, 255))
+        text = f"{className.upper()}: {count}"
+        
+        (text_w, text_h), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_COMPLEX, 1, 2)
+        
+        # Background box for text
+        cv2.rectangle(img, (10, y - text_h - 5), (10 + text_w + 10, y + baseline), (0, 0, 0), cv2.FILLED)
+        cv2.putText(img, text, (10, y), cv2.FONT_HERSHEY_COMPLEX, 1, color, 2)
+        y += 40
+        
+    # We return the raw image and ONLY the person count to trigger human alerts
+    return img, person_count
 
 def camera_worker_thread():
     """Background thread that safely manages the single hardware camera lock."""
@@ -101,11 +140,12 @@ def camera_worker_thread():
     try:
         while True:
             img = picam2.capture_array()
+            # Resize for optimal web streaming performance
             img_resized = cv2.resize(img, (640, 480), interpolation=cv2.INTER_LINEAR)
             img_bgr = cv2.cvtColor(img_resized, cv2.COLOR_RGB2BGR)
             
             processed_frame, target_count = process_and_draw_frame(img_bgr)
-            current_camera_targets = target_count # Update the global count for the WebSocket
+            current_camera_targets = target_count # Update global human count for WebSocket
             
             ret, buffer = cv2.imencode('.jpg', processed_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
             if ret:
@@ -142,7 +182,6 @@ async def websocket_endpoint(ws: WebSocket):
         while True:
             data = await read_sensor()
             
-            # If the physical camera thread is actively providing valid data,
             # OVERRIDE the radar's hardcoded target count with the real AI visual count.
             if latest_jpeg is not None:
                 data["targets_count"] = current_camera_targets

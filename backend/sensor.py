@@ -31,6 +31,7 @@ _last_valid_temp = None
 _last_valid_hum = None
 _last_valid_hr = 0.0
 _last_valid_br = 0.0
+_last_vitals_time = time.time()
 
 # Initial Rescuer Base and Robot Position coordinates (Fallback data for Mock mode)
 _gps_lat = 14.4791
@@ -149,7 +150,7 @@ def _read_physical_dht22():
 
 def parse_mmwave_frame():
     """Drains text lines currently backed up in the serial buffer cache."""
-    global _serial_connection, _last_valid_hr, _last_valid_br
+    global _serial_connection, _last_valid_hr, _last_valid_br, _last_vitals_time
     if _serial_connection is None:
         return 0.0, 0.0 # Force explicit zero readings if device is physically detached
 
@@ -164,12 +165,15 @@ def parse_mmwave_frame():
                 if not line:
                     continue
 
+                # Timestamp the moment we receive valid human telemetry
                 if "heart" in line:
                     parts = line.split(":")
                     if len(parts) >= 2:
                         try:
                             val = float(parts[1].strip())
-                            if val >= 0: _last_valid_hr = val
+                            if val >= 0: 
+                                _last_valid_hr = val
+                                _last_vitals_time = time.time()
                         except ValueError: pass
 
                 elif "breath" in line or "respiratory" in line:
@@ -177,13 +181,21 @@ def parse_mmwave_frame():
                     if len(parts) >= 2:
                         try:
                             val = float(parts[1].strip())
-                            if val >= 0: _last_valid_br = val
+                            if val >= 0: 
+                                _last_valid_br = val
+                                _last_vitals_time = time.time()
                         except ValueError: pass
     except Exception as e:
         print(f"[RESCUE RADAR ERROR] Connection lost: {e}")
         try: _serial_connection.close()
         except: pass
         _serial_connection = None
+
+    # --- TIMEOUT LOGIC ---
+    # If the radar goes completely silent on vitals for 4 seconds, clear the readings
+    if time.time() - _last_vitals_time > 4.0:
+        _last_valid_hr = 0.0
+        _last_valid_br = 0.0
 
     return _last_valid_hr, _last_valid_br
 
