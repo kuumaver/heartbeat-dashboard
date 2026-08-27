@@ -9,6 +9,7 @@
   let temperature = 24.5;
   let humidity = 68;
   let targetsCount = 0;
+  let hasGpsFix = false;
   let gps = { lat: 14.4791, lng: 120.8980, accuracy: 3.2, altitude: 12, speed: 0, heading: 0 };
   let connected = false;
   let ws;
@@ -21,40 +22,59 @@
   const BASE_LNG = 120.898000;
   const METERS_PER_DEGREE = 111320;
 
-  function processGeolocationAndVitals(rLat, rLng, heading, distCm, hr, br, count) {
-    const distM = distCm / 100;
-    const headingRad = (heading * Math.PI) / 180;
-    
-    const deltaLat = (distM * Math.cos(headingRad)) / METERS_PER_DEGREE;
-    const deltaLng = (distM * Math.sin(headingRad)) / (METERS_PER_DEGREE * Math.cos((rLat * Math.PI) / 180));
-    
-    const tLat = rLat + deltaLat;
-    const tLng = rLng + deltaLng;
-    
-    const dy = (tLat - BASE_LAT) * METERS_PER_DEGREE;
-    const dx = (tLng - BASE_LNG) * METERS_PER_DEGREE * Math.cos((BASE_LAT * Math.PI) / 180);
-    const rangeFromBase = Math.sqrt(dx * dx + dy * dy);
-
-    // CRITICAL FIX: Simplified warnings without emojis or bloated labels
-    let symptoms = [];
-    if (hr > 100) symptoms.push("Tachycardia");
-    else if (hr < 60) symptoms.push("Bradycardia");
-    if (br > 20) symptoms.push("Tachypnea");
-    else if (br < 12) symptoms.push("Bradypnea");
-    
-    const statusText = symptoms.length === 0 ? "Stable" : symptoms.join(" + ");
-
+  function processGeolocationAndVitals(rLat, rLng, heading, distCm, hr, br, count, fixAvailable) {
+  if (!fixAvailable) {
     return {
       ts: Date.now(),
-      lat: tLat.toFixed(6),
-      lng: tLng.toFixed(6),
-      range: rangeFromBase.toFixed(1),
-      condition: statusText,
+      lat: "NO GPS FIX",
+      lng: "NO GPS FIX",
+      range: "—",
+      condition: (() => {
+        let symptoms = [];
+        if (hr > 100) symptoms.push("Tachycardia");
+        else if (hr < 60) symptoms.push("Bradycardia");
+        if (br > 20) symptoms.push("Tachypnea");
+        else if (br < 12) symptoms.push("Bradypnea");
+        return symptoms.length === 0 ? "Stable" : symptoms.join(" + ");
+      })(),
       hr,
       br,
       count
     };
   }
+
+  const distM = distCm / 100;
+  const headingRad = (heading * Math.PI) / 180;
+  
+  const deltaLat = (distM * Math.cos(headingRad)) / METERS_PER_DEGREE;
+  const deltaLng = (distM * Math.sin(headingRad)) / (METERS_PER_DEGREE * Math.cos((rLat * Math.PI) / 180));
+  
+  const tLat = rLat + deltaLat;
+  const tLng = rLng + deltaLng;
+  
+  const dy = (tLat - BASE_LAT) * METERS_PER_DEGREE;
+  const dx = (tLng - BASE_LNG) * METERS_PER_DEGREE * Math.cos((BASE_LAT * Math.PI) / 180);
+  const rangeFromBase = Math.sqrt(dx * dx + dy * dy);
+
+  let symptoms = [];
+  if (hr > 100) symptoms.push("Tachycardia");
+  else if (hr < 60) symptoms.push("Bradycardia");
+  if (br > 20) symptoms.push("Tachypnea");
+  else if (br < 12) symptoms.push("Bradypnea");
+  
+  const statusText = symptoms.length === 0 ? "Stable" : symptoms.join(" + ");
+
+  return {
+    ts: Date.now(),
+    lat: tLat.toFixed(6),
+    lng: tLng.toFixed(6),
+    range: rangeFromBase.toFixed(1),
+    condition: statusText,
+    hr,
+    br,
+    count
+  };
+}
 
   function appendDeduplicatedLog(log) {
     if (detectionHistory.length === 0) {
@@ -87,15 +107,17 @@
       temperature  = data.temperature   ?? temperature;
       humidity     = data.humidity      ?? humidity;
       targetsCount = data.targets_count ?? targetsCount;
-      if (data.gps) gps = { ...gps, ...data.gps };
-
+      if (data.gps){
+        gps = { ...gps, ...data.gps };
+        hasGpsFix = true;
+      }
       history = [...history, {
         ts: Date.now(), heartRate, breathRate, distance, temperature, humidity
       }].slice(-3600);
 
-      if (heartRate > 0) {
+      if (heartRate > 0 && targetsCount > 0) {
         const diagnosticRecord = processGeolocationAndVitals(
-          gps.lat, gps.lng, gps.heading, distance, heartRate, breathRate, targetsCount
+          gps.lat, gps.lng, gps.heading, distance, heartRate, breathRate, targetsCount, hasGpsFix
         );
         appendDeduplicatedLog(diagnosticRecord);
       }
@@ -109,7 +131,7 @@
   <nav class="tab-bar">
     <div class="tab-brand">
       <span class="brand-icon">🤖</span>
-      <span class="brand-name">RescueBot Core</span>
+      <span class="brand-name">LIFEBSG</span>
     </div>
     <div class="tabs">
       <button class="tab-btn" class:active={activeTab === 'live'} on:click={() => (activeTab = 'live')}>
@@ -130,7 +152,7 @@
 
   <div class="tab-content">
     {#if activeTab === 'live'}
-      <LiveView {heartRate} {breathRate} {distance} {temperature} {humidity} {gps} {connected} {targetsCount} {BASE_LAT} {BASE_LNG} />
+      <LiveView {heartRate} {breathRate} {distance} {temperature} {humidity} {gps} {connected} {targetsCount} {BASE_LAT} {BASE_LNG} {detectionHistory} />
     {:else if activeTab === 'advanced'}
       <div class="pane-scroll-box">
         <AdvancedStats {history} />

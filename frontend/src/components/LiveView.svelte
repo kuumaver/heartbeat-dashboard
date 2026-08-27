@@ -1,15 +1,14 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import Minimap from './MiniMap.svelte';
 
   export let heartRate = 0;
   export let breathRate = 0;
   export let distance = 0;
-  export let temperature = 0;
-  export let humidity = 0;
+  
   export let gps = { lat: 0, lng: 0, accuracy: 0, altitude: 0, speed: 0, heading: 0 };
   export let connected = false;
   export let targetsCount = 0;
+  export let detectionHistory = [];
   
   export let BASE_LAT = 0;
   export let BASE_LNG = 0;
@@ -29,7 +28,6 @@
   $: isTachypnea = breathRate > 20;
   $: isBradypnea = breathRate > 0 && breathRate < 12;
 
-  // CRITICAL FIX: Trimmed warning labels down, removed bloated descriptions
   $: clinicalCondition = (() => {
     let diagnoses = [];
     if (isTachycardia) diagnoses.push("Tachycardia");
@@ -81,15 +79,18 @@
 
   <div class="overlay-left">
     <div class="scroller-inner">
-      <Minimap {gps} baseLat={BASE_LAT} baseLng={BASE_LNG} />
-      
-      <div class="sensor-card gps-card">
-        <div class="sc-header"><span class="sc-icon">🛰️</span><span class="sc-title">GPS TELEMETRY</span></div>
-        <div class="sc-row"><span class="sc-key">LAT</span><span class="sc-val">{gps.lat.toFixed(5)}°</span></div>
-        <div class="sc-row"><span class="sc-key">LNG</span><span class="sc-val">{gps.lng.toFixed(5)}°</span></div>
-        <div class="sc-row"><span class="sc-key">HDG</span><span class="sc-val">{gps.heading.toFixed(0)}°</span></div>
-        <div class="sc-row"><span class="sc-key">SPD</span><span class="sc-val">{gps.speed.toFixed(1)}m/s</span></div>
-      </div>
+      {#each detectionHistory.slice(0, 8) as log}
+        <div class="sensor-card log-card">
+          <div class="sc-row"><span class="sc-key">TIME</span><span class="sc-val">{new Date(log.ts).toLocaleTimeString()}</span></div>
+          <div class="sc-row"><span class="sc-key">TARGETS</span><span class="sc-val" style="color:#00ff88">{log.count} count</span></div>
+          <div class="sc-row"><span class="sc-key">LAT</span><span class="sc-val">{log.lat}°N</span></div>
+          <div class="sc-row"><span class="sc-key">LNG</span><span class="sc-val">{log.lng}°E</span></div>
+        </div>
+      {:else}
+        <div class="sensor-card log-card">
+          <div class="sc-row"><span class="sc-key" style="color:#44567a">No targets logged yet</span></div>
+        </div>
+      {/each}
     </div>
   </div>
 
@@ -97,16 +98,16 @@
     <div class="alert-banner-box {alertState}">
       <div class="alert-flash">
         {#if alertState === 'possible'}
-          WARNING: POSSIBLE HUMAN PRESENCE
+          WARNING: POSSIBLE TARGET DETECTED
         {:else if alertState === 'confirmed'}
-          ALERT: HUMAN FOUND
+          ALERT: TARGET FOUND
         {:else if alertState === 'nopulse'}
-          HUMAN FOUND BUT NO PULSE
+          TARGET FOUND BUT NO PULSE
         {/if}
       </div>
       <div class="alert-details">
         {#if heartRate > 0}
-          Status: <span class="cond-txt">{clinicalCondition}</span>
+          <!-- Status: <span class="cond-txt">{clinicalCondition}</span> -->
         {:else}
           <span class="cond-txt">Vital signs absent</span>
         {/if}
@@ -115,7 +116,7 @@
   {/if}
 
   {#if distance < 50.0 && connected}
-    <div class="proximity-warning">WARNING: PROXIMITY CRITICAL</div>
+    <!-- <div class="proximity-warning">WARNING: PROXIMITY CRITICAL</div> -->
   {/if}
 
   <div class="overlay-right">
@@ -131,20 +132,12 @@
         <div class="vc-value blue">{breathRate.toFixed(1)}</div>
         <div class="vc-unit">RPM</div>
       </div>
-
-      <div class="sensor-card env-card">
-        <div class="sc-header"><span class="sc-icon">🌡️</span><span class="sc-title">ENVIRONMENT</span></div>
-        <div class="sc-row"><span class="sc-key">TEMP</span><span class="sc-val">{temperature.toFixed(1)}°C</span></div>
-        <div class="sc-row"><span class="sc-key">HUM</span><span class="sc-val blue">{humidity.toFixed(0)}%</span></div>
-      </div>
     </div>
   </div>
 
   <div class="overlay-bottom">
     <div class="coord-tape">
-      <span class="ct-item"><span class="ct-label">BASE</span><span class="ct-val">{BASE_LAT.toFixed(4)}, {BASE_LNG.toFixed(4)}</span></span>
       <span class="ct-sep">|</span>
-      <span class="ct-item"><span class="ct-label">ROBOT</span><span class="ct-val">{gps.lat.toFixed(6)}, {gps.lng.toFixed(6)}</span></span>
       <span class="ct-sep">|</span>
       <span class="ct-item"><span class="ct-label">TARGETS</span><span class="ct-val" style="color: {targetsCount > 0 ? '#00ff88' : '#666'}">{targetsCount} count</span></span>
     </div>
@@ -163,13 +156,12 @@
     justify-content: center;
   }
 
-  /* CRITICAL ASPECT RATIO CONTAINER FOR VIDEO MAIN STREAM */
   .video-ratio-container {
     width: 100%;
     height: 100%;
     max-width: 100%;
     max-height: calc(100vh - 48px);
-    aspect-ratio: 16 / 9; /* Lock system video aspect ratio */
+    aspect-ratio: 16 / 9;
     position: relative;
     background: #040712;
     overflow: hidden;
@@ -183,25 +175,21 @@
   .camera-vignette { position: absolute; inset: 0; background: radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.8) 100%); pointer-events: none; z-index: 3; }
   .scanlines { position: absolute; inset: 0; background: repeating-linear-gradient(to bottom, transparent 0px, transparent 2px, rgba(0,0,0,0.12) 2px, rgba(0,0,0,0.12) 4px); pointer-events: none; z-index: 2; }
   
-  /* MINIMALIST ALERTS */
   .alert-banner-box {
     position: absolute; top: 4.5rem; left: 50%;
     transform: translateX(-50%);
     width: 320px; border-radius: 4px;
     padding: 0.6rem; backdrop-filter: blur(8px); z-index: 50;
-    border: 1px solid transparent; /* default */
+    border: 1px solid transparent;
   }
 
-  /* Orange state: Radar only */
   .alert-banner-box.possible { background: rgba(25, 15, 0, 0.95); border-color: #ffaa00; }
   .alert-banner-box.possible .alert-flash, .alert-banner-box.possible .cond-txt { color: #ffaa00; }
 
-  /* Green state: Radar + Camera */
   .alert-banner-box.confirmed { background: rgba(11, 25, 16, 0.95); border-color: #00ff88; }
   .alert-banner-box.confirmed .alert-flash { color: #00ff88; }
-  .alert-banner-box.confirmed .cond-txt { color: #ff5555; } /* Keep medical issues red */
+  .alert-banner-box.confirmed .cond-txt { color: #ff5555; }
 
-  /* Red state: Camera only, no pulse */
   .alert-banner-box.nopulse { background: rgba(30, 10, 14, 0.95); border-color: #ff4444; }
   .alert-banner-box.nopulse .alert-flash, .alert-banner-box.nopulse .cond-txt { color: #ff4444; }
 
@@ -209,11 +197,10 @@
   .alert-details { font-size: 0.65rem; line-height: 1.4; color: #d1dfec; }
   .cond-txt { font-weight: bold; }
 
-  /* ABSOLUTE HUD BOUNDARIES SETUP */
   .overlay-top, .overlay-left, .overlay-right, .overlay-bottom { 
     position: absolute; 
     z-index: 10; 
-    pointer-events: none; /* Allows canvas clicks to fall through transparent space */
+    pointer-events: none;
   }
   
   .overlay-top { top: 0.75rem; left: 0.75rem; right: 0.75rem; display: flex; justify-content: space-between; }
@@ -224,17 +211,15 @@
   .ov-val.dim { color: #444; }
   .ov-unit { font-size: 0.55rem; color: #444; margin-left: 2px; }
   
-  /* LEFT SIDEBAR CONTROLS */
   .overlay-left { 
     top: 3.5rem; 
     left: 0.75rem;
     bottom: 2.5rem;
-    width: 322px; /* Set to accommodate standard 300px map element margins safely */
+    width: 322px;
     display: flex;
     flex-direction: column;
   }
 
-  /* RIGHT SIDEBAR CONTROLS */
   .overlay-right { 
     top: 3.5rem;
     right: 0.75rem; 
@@ -244,28 +229,26 @@
     flex-direction: column;
   }
 
-  /* THE SCROLL BOX INTERCEPTOR WRAPPERS */
   .scroller-inner {
     width: 100%;
     max-height: 100%;
     overflow-y: auto;
     overflow-x: hidden;
-    pointer-events: auto; /* CRITICAL: Catch layout scrolling events specifically on the metrics cards */
+    pointer-events: auto;
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
     padding-right: 4px;
   }
 
-  /* Hide custom hardware scrollbar visual tracks */
   .scroller-inner::-webkit-scrollbar { width: 4px; }
   .scroller-inner::-webkit-scrollbar-track { background: transparent; }
   .scroller-inner::-webkit-scrollbar-thumb { background: rgba(0, 255, 136, 0.2); border-radius: 2px; }
 
-  .sensor-card { background: rgba(8, 11, 16, 0.9); border: 1px solid rgba(0, 255, 136, 0.12); border-radius: 4px; padding: 0.4rem; width: 100%; }
+  .sensor-card { background: rgba(8, 11, 16, 0.9); border: 1px solid rgba(0, 255, 136, 0.12); border-radius: 4px; padding: 0.4rem; width: 45%; }
   .sc-header { display: flex; gap: 0.3rem; border-bottom: 1px solid rgba(0,255,136,0.1); padding-bottom: 0.25rem; margin-bottom: 0.35rem; align-items: center; }
   .sc-title { font-size: 0.5rem; letter-spacing: 1.2px; color: #00ff88; }
-  .sc-row { display: flex; justify-content: space-between; padding: 0.1rem 0; font-size: 0.6rem; }
+  .sc-row { display: flex; justify-content: space-between; font-size: 0.6rem; }
   .sc-key { color: #44567a; }
   .sc-val { font-weight: bold; color: #c3cfe2; }
   .sc-val.blue { color: #4488ff; }

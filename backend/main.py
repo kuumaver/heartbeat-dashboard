@@ -8,6 +8,9 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from sensor import read_sensor
+import sys
+sys.path.append('/home/lifesg/gps_parser_v3')
+from gps_parserPi5 import GPSReader #for GPS parsing
 
 # Initialize FastAPI
 app = FastAPI()
@@ -24,6 +27,33 @@ app.add_middleware(
 # =========================================================================
 latest_jpeg = None
 current_camera_targets = 0
+
+# =========================================================================
+# GPS READER INITIALIZATION
+# =========================================================================
+try:
+    gps_reader = GPSReader(port="/dev/ttyAMA0", baudrate=9600)
+    print("[GPS] GPS Reader initialized successfully.")
+except Exception as e:
+    gps_reader = None
+    print(f"[GPS ERROR] Could not initialize GPS Reader: {e}")
+
+async def get_gps_payload():
+    if gps_reader is None:
+        return None
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, gps_reader.update)
+    if not gps_reader.has_fix:
+        return None
+    return {
+        "lat": gps_reader.latitude,
+        "lng": gps_reader.longitude,
+        "altitude": gps_reader.altitude,
+        "speed": round(gps_reader.speed * 0.514444, 2),
+        "heading": 0,
+        "accuracy": gps_reader.hdop,
+    }    
+
 
 # =========================================================================
 # INTEGRATED PICAMERA2 + OBJECT DETECTION LAYER
@@ -53,9 +83,9 @@ except Exception as e:
 
 # Per-class confidence thresholds
 classThresholds = {
-    'person': 0.45, 
-    'cat':    0.60, 
-    'dog':    0.55,
+    'person': 0.60, #previously 0.65
+    'cat':    0.75, #previously 0.80
+    'dog':    0.70, #previously 0.75
 }
 
 # Colors per class (BGR)
@@ -99,11 +129,11 @@ def process_and_draw_frame(img, nms=0.2, objects=['person', 'cat', 'dog']):
 
     # Calculate detection counter per class
     counts = {}
-    person_count = 0
+    target_count = 0
     for _, className in objectInfo:
         counts[className] = counts.get(className, 0) + 1
-        if className == 'person':
-            person_count += 1
+        if className in ('person', 'cat', 'dog'):
+            target_count += 1
     
     # Draw counter text block on top left
     y = 40
@@ -119,7 +149,7 @@ def process_and_draw_frame(img, nms=0.2, objects=['person', 'cat', 'dog']):
         y += 40
         
     # We return the raw image and ONLY the person count to trigger human alerts
-    return img, person_count
+    return img, target_count
 
 def camera_worker_thread():
     """Background thread that safely manages the single hardware camera lock."""
@@ -130,7 +160,9 @@ def camera_worker_thread():
         print("[CAMERA ENGINE] Booting Picamera2 background thread...")
         picam2 = Picamera2()
         picam2.preview_configuration.main.size = (1280, 720) 
-        picam2.preview_configuration.main.format = "RGB888"
+
+        #Change 2: Changed the format to BGR888 to avoid color filter issues
+        picam2.preview_configuration.main.format = "BGR888"
         picam2.configure("preview")
         picam2.start()
     except Exception as e:
@@ -141,11 +173,17 @@ def camera_worker_thread():
         while True:
             img = picam2.capture_array()
             # Resize for optimal web streaming performance
+
+            #Change 3: Resize to 1280, 720 from 640, 480 for wider view
             img_resized = cv2.resize(img, (640, 480), interpolation=cv2.INTER_LINEAR)
             img_bgr = cv2.cvtColor(img_resized, cv2.COLOR_RGB2BGR)
             
+            #Change 1:
+            img_bgr = cv2.rotate(img_bgr, cv2.ROTATE_180)  # Rotate if camera is mounted upside down
+            
             processed_frame, target_count = process_and_draw_frame(img_bgr)
             current_camera_targets = target_count # Update global human count for WebSocket
+
             
             ret, buffer = cv2.imencode('.jpg', processed_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
             if ret:
@@ -185,6 +223,10 @@ async def websocket_endpoint(ws: WebSocket):
             # OVERRIDE the radar's hardcoded target count with the real AI visual count.
             if latest_jpeg is not None:
                 data["targets_count"] = current_camera_targets
+
+            gps_payload = await get_gps_payload()
+            if gps_payload:
+                data["gps"] = gps_payload
                 
             await ws.send_json(data)
     except WebSocketDisconnect:

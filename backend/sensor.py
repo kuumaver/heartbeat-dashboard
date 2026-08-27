@@ -4,7 +4,7 @@ import asyncio
 import random
 import math
 import time
-from gps_parser import GPSReader
+from gps_parserPi5 import GPSReader
 
 load_dotenv = lambda: None
 try:
@@ -241,7 +241,6 @@ async def read_sensor():
                 "temperature": 0.0,
                 "humidity": 0.0,
                 "targets_count": 0,
-                "gps": {"lat": 0.0, "lng": 0.0, "altitude": 0.0, "speed": 0.0, "heading": 0.0, "accuracy": 0.0}
             }
 
         # 1. Read DHT22 asynchronously
@@ -261,12 +260,16 @@ async def read_sensor():
         else:
             actual_distance = 0.0
         
+        # 4. GPS read — only include "gps" in the payload when there's an actual live fix.
+        gps_fix_now = False
         current_lat, current_lng = _last_known_lat, _last_known_lng
         current_alt, current_speed, current_accuracy = 12.4, 0.0, 5.0
         
         if _gps_reader:
             await asyncio.to_thread(_gps_reader.update)
+            #print(f"[GPS DEBUG] has_fix={_gps_reader.current_data.has_fix} lat={_gps_reader.current_data.latitude} lng={_gps_reader.current_data.longitude}")
             if _gps_reader.current_data.has_fix:
+                gps_fix_now = True
                 _last_known_lat = current_lat = _gps_reader.current_data.latitude
                 _last_known_lng = current_lng = _gps_reader.current_data.longitude
                 current_alt = _gps_reader.current_data.altitude
@@ -275,14 +278,17 @@ async def read_sensor():
                 current_speed = _gps_reader.current_data.speed_knots * 0.514444
                 current_accuracy = _gps_reader.current_data.hdop
 
-        return {
+        result = {
             "heart_rate": hr,
             "breath_rate": br,
             "distance": actual_distance,
             "temperature": display_temp,
             "humidity": display_hum, 
             "targets_count": targets_found,
-            "gps": {
+        }
+
+        if gps_fix_now:
+            result["gps"] = {
                 "lat": current_lat, 
                 "lng": current_lng, 
                 "altitude": current_alt, 
@@ -290,4 +296,5 @@ async def read_sensor():
                 "heading": 120.0, # You can update this later if your GPS calculates heading
                 "accuracy": round(current_accuracy, 1)
             }
-        }
+
+        return result
